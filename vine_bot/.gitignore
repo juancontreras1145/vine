@@ -1,6 +1,0 @@
-.env
-__pycache__/
-*.pyc
-vine.pdf
-vine_raw.txt
-vine_index.json

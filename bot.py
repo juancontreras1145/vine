@@ -1,4 +1,4 @@
-import os,json,re,unicodedata,logging
+import os,json,re,unicodedata,logging,html
 from pathlib import Path
 from rapidfuzz import process,fuzz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -33,11 +33,82 @@ TERM_MAP={}
 for k,e in DATA.items():
  for term in title_terms(e['title']): TERM_MAP.setdefault(term,[]).append(k)
 
+def clean_vine_text(text):
+ # El PDF deja algunos caracteres de control visual como ¶.
+ text=text.replace("¶","")
+ text=re.sub(r"[ \t]+", " ", text)
+ text=re.sub(r" *\n *", "\n", text)
+ text=re.sub(r"\n{3,}", "\n\n", text)
+ return text.strip()
+
+def format_vine_part(text):
+ text=clean_vine_text(text)
+ lines=text.splitlines()
+ out=[]
+
+ for line in lines:
+  line=line.strip()
+  if not line:
+   if out and out[-1] != "":
+    out.append("")
+   continue
+
+  escaped=html.escape(line)
+
+  # Título repetido al comienzo de la definición.
+  if re.fullmatch(r"[A-ZÁÉÍÓÚÜÑ0-9 ,;:/()¿?¡!.'’\-]+", line) and len(line) <= 100:
+   out.extend(["", f"<b>{escaped}</b>", ""])
+   continue
+
+  # Secciones del Vine: A. Verbos, B. Nombres, C. Adjetivos...
+  if re.match(r"^[A-ZÁÉÍÓÚÑ]\.\s+\S+", line):
+   out.extend(["", f"<b>{escaped}</b>", ""])
+   continue
+
+  # Subapartados que vienen solos.
+  if re.fullmatch(r"(Verbos?|Nombres?|Adjetivos?|Adverbios?|Preposiciones?|Conjunciones?|Pronombres?|Participios?)", line, re.I):
+   out.extend(["", f"<b>{escaped}</b>", ""])
+   continue
+
+  # Cada acepción numerada empieza en una línea nueva y con número en negrita.
+  m=re.match(r"^(\d+)\.\s*(.*)$", line)
+  if m:
+   if out and out[-1] != "":
+    out.append("")
+   rest=html.escape(m.group(2))
+   out.append(f"<b>{m.group(1)}.</b> {rest}")
+   continue
+
+  out.append(escaped)
+
+ result="\n".join(out)
+ result=re.sub(r"\n{3,}", "\n\n", result)
+ return result.strip()
+
 async def send_entry(message,key):
- entry=DATA[key]; parts=chunks(entry['text'])
+ entry=DATA[key]
+ text=clean_vine_text(entry["text"])
+
+ # Evita repetir el encabezado si el texto extraído ya comienza con él.
+ title=entry["title"].strip()
+ if norm(text.split("\n",1)[0]) == norm(title):
+  text=text.split("\n",1)[1] if "\n" in text else ""
+
+ parts=chunks(text)
+
  for i,part in enumerate(parts,1):
-  head=f'📖 {entry["title"]}' + (f' — {i}/{len(parts)}' if len(parts)>1 else '')
-  await message.reply_text(head+'\n\n'+part)
+  title_html=html.escape(title)
+  if len(parts)>1:
+   head=f'📖 <b>{title_html}</b>\n<i>Parte {i} de {len(parts)}</i>'
+  else:
+   head=f'📖 <b>{title_html}</b>'
+
+  body=format_vine_part(part)
+  await message.reply_text(
+   head + ("\n\n"+body if body else ""),
+   parse_mode="HTML",
+   disable_web_page_preview=True
+  )
 
 def candidates(q):
  # 1) encabezado exacto; 2) término exacto dentro de encabezados compuestos.
